@@ -1,27 +1,40 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
-	"os"
+	"strings"
 )
 
-func readFile(file *os.File) error {
-	var curLine string
+func getLinesChannel(f io.ReadCloser) <-chan string {
+	lines := make(chan string)
+	go func() {
+		defer f.Close()
+		defer close(lines)
 
-	for {
-		fileBytes := make([]byte, 8)
-		_, err := file.Read(fileBytes)
+		var curLine string
+		for {
+			fileBytes := make([]byte, 8)
+			_, err := f.Read(fileBytes)
+			if errors.Is(err, io.EOF) {
+				if curLine != "" {
+					lines <- curLine
+				}
+				break
+			}
+			if err != nil {
+				fmt.Printf("error: %s\n", err.Error())
+				return
+			}
 
-		if err == io.EOF {
-			return nil
+			parts := strings.Split(string(fileBytes), "\n")
+			for i := 0; i < len(parts)-1; i++ {
+				lines <- fmt.Sprintf("%s%s", curLine, parts[i])
+				curLine = ""
+			}
+			curLine += parts[len(parts)-1]
 		}
-
-		if err != nil {
-			return fmt.Errorf("error reading file: %v", err)
-
-		}
-
-		fmt.Printf("read: %s\n", fileBytes)
-	}
+	}()
+	return lines
 }

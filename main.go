@@ -13,9 +13,7 @@ func main() {
 		return
 	}
 
-	if err := readFile(file); err != nil {
-		fmt.Printf("error reading file: %v\n", err)
-		os.Exit(1)
-		return
+	for line := range getLinesChannel(file) {
+		fmt.Println("read:", line)
 	}
 }
