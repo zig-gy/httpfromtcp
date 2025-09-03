@@ -1,6 +1,8 @@
 package request
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -9,7 +11,15 @@ import (
 
 type Request struct {
 	RequestLine RequestLine
+	state       requestState
 }
+
+type requestState int
+
+const (
+	requestStateInitialized requestState = iota
+	requestStateDone
+)
 
 type RequestLine struct {
 	HttpVersion   string
@@ -17,46 +27,113 @@ type RequestLine struct {
 	Method        string
 }
 
+const crlf = "\r\n"
+const bufferSize = 8
+
 func RequestFromReader(reader io.Reader) (*Request, error) {
-	req, err := io.ReadAll(reader)
-	if err != nil {
-		return nil, fmt.Errorf("could not read from reader: %v", err)
+	buf := make([]byte, bufferSize)
+	readToIndex := 0
+	req := &Request{
+		state: requestStateInitialized,
+	}
+	for req.state != requestStateDone {
+		if readToIndex >= len(buf) {
+			newBuf := make([]byte, len(buf)*2)
+			copy(newBuf, buf)
+			buf = newBuf
+		}
+
+		numBytesRead, err := reader.Read(buf[readToIndex:])
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				req.state = requestStateDone
+				break
+			}
+			return nil, err
+		}
+		readToIndex += numBytesRead
+
+		numBytesParsed, err := req.parse(buf[:readToIndex])
+		if err != nil {
+			return nil, err
+		}
+
+		copy(buf, buf[numBytesParsed:])
+		readToIndex -= numBytesParsed
+	}
+	return req, nil
+}
+
+func parseRequestLine(data []byte) (bytesConsumed int, reqLine *RequestLine, err error) {
+	idx := bytes.Index(data, []byte(crlf))
+	if idx == -1 {
+		return 0, nil, nil
 	}
 
-	requestLine, err := parseRequestLine(string(req))
+	requestLineText := string(data[:idx])
+	requestLine, err := requestLineFromString(requestLineText)
 	if err != nil {
-		return nil, fmt.Errorf("could not parse request line: %v", err)
+		return 0, nil, fmt.Errorf("error reding request line: %v", err)
 	}
 
-	for _, letter := range requestLine.Method {
-		if !unicode.IsUpper(letter) {
-			return nil, fmt.Errorf("method line malformed, not all uppercase alphabetic")
+	return idx + 2, requestLine, nil
+}
+
+func requestLineFromString(str string) (*RequestLine, error) {
+	parts := strings.Split(str, " ")
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("poorly formatted request-line: %s", str)
+	}
+
+	method := parts[0]
+	for _, c := range method {
+		if !unicode.IsUpper(c) {
+			return nil, fmt.Errorf("invalid method: %s", method)
 		}
 	}
 
-	if !strings.Contains(requestLine.HttpVersion, "1.1") {
-		return nil, fmt.Errorf("http version does not match")
+	requestTarget := parts[1]
+
+	versionParts := strings.Split(parts[2], "/")
+	if len(versionParts) != 2 {
+		return nil, fmt.Errorf("malformed start-line: %s", str)
 	}
 
-	request := Request{RequestLine: requestLine}
-	return &request, nil
+	httpPart := versionParts[0]
+	if httpPart != "HTTP" {
+		return nil, fmt.Errorf("unrecognized HTTP-version: %s", httpPart)
+	}
+
+	version := versionParts[1]
+	if version != "1.1" {
+		return nil, fmt.Errorf("unrecognized HTTP-version %s", version)
+	}
+
+	return &RequestLine{
+		Method:        method,
+		RequestTarget: requestTarget,
+		HttpVersion:   versionParts[1],
+	}, nil
 }
 
-func parseRequestLine(request string) (RequestLine, error) {
-	reqParts := strings.Split(request, "\r\n")
-	lineParts := strings.Split(reqParts[0], " ")
-	if len(lineParts) < 3 {
-		return RequestLine{}, fmt.Errorf("request malformed, not enough fields")
+func (r *Request) parse(data []byte) (int, error) {
+	switch r.state {
+	case requestStateInitialized:
+		idx, requestLine, err := parseRequestLine(data)
+		if err != nil {
+			//errors out
+			return 0, err
+		}
+		if idx == 0 {
+			//needs more data
+			return 0, nil
+		}
+		r.RequestLine = *requestLine
+		r.state = requestStateDone
+		return idx, nil
+	case requestStateDone:
+		return 0, fmt.Errorf("error: trying to read data in done state")
+	default:
+		return 0, fmt.Errorf("unknown state")
 	}
-
-	httpVersionParts := strings.Split(lineParts[2], "/")
-	if httpVersionParts[0] != "HTTP" {
-		return RequestLine{}, fmt.Errorf("not an http request")
-	}
-
-	return RequestLine{
-		HttpVersion:   httpVersionParts[1],
-		RequestTarget: lineParts[1],
-		Method:        lineParts[0],
-	}, nil
 }
