@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"log"
 	"net"
+
+	"github.com/zig-gy/httpfromtcp/internal/request"
 )
 
 func main() {
@@ -19,9 +21,14 @@ func main() {
 			log.Fatalln("error accepting request:", err)
 		}
 		fmt.Println("connection established")
-		for line := range getLinesChannel(conn) {
-			fmt.Println(line)
+		requestLine, err := request.RequestFromReader(conn)
+		if err != nil {
+			log.Fatalln("error reading request: ", err)
 		}
+		fmt.Println("Request line:")
+		fmt.Println("- Method:", requestLine.RequestLine.Method)
+		fmt.Println("- Target:", requestLine.RequestLine.RequestTarget)
+		fmt.Println("- Version:", requestLine.RequestLine.HttpVersion)
 		fmt.Println("connection closed")
 	}
 }
